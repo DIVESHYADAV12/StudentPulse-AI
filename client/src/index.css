@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #FAF8F5;
+    color: #0F172A;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-white bg-forest-700 hover:bg-forest-800 active:bg-forest-900 transition-all duration-200 shadow-sm hover:shadow;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-forest-900 bg-forest-50 hover:bg-forest-100 border border-forest-200 transition-all duration-200;
+  }
+
+  .btn-outline {
+    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl font-semibold text-navy-800 bg-white hover:bg-cream-100 border border-cream-300 transition-all duration-200;
+  }
+
+  .card-premium {
+    @apply bg-white rounded-2xl border border-cream-200/80 p-6 shadow-soft hover:shadow-premium transition-all duration-300;
+  }
+
+  .badge-forest {
+    @apply inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-forest-100 text-forest-800 border border-forest-200;
+  }
+}
