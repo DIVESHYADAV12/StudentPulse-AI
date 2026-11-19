@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from app.models.interview import (
     InterviewSession, 
     InterviewSessionCreate, 
@@ -6,8 +6,16 @@ from app.models.interview import (
 )
 from app.core.dependencies import get_current_user
 from app.database import db_instance, is_db_connected, memory_store, get_or_create_profile, update_profile
-from app.services.interview_service import create_interview_session, evaluate_interview_answer
+from app.services.interview_service import (
+    create_interview_session, 
+    evaluate_interview_answer,
+    generate_final_interview_evaluation
+)
+from app.config import settings
 from typing import Dict, Any, List
+import tempfile, os, logging
+
+logger = logging.getLogger("studentpulse.interview")
 
 router = APIRouter(prefix="/api/v1/interview", tags=["AI Mock Interviewer"])
 
@@ -81,24 +89,22 @@ async def submit_answer(
     target_q.improvements = evaluation.get("improvements", [])
     target_q.ideal_answer = evaluation.get("ideal_answer")
 
-    # Advance current index
-    if session.current_index < len(session.questions) - 1:
-        session.current_index += 1
-
     # Check if all questions are answered
     answered_scores = [q.score for q in session.questions if q.score is not None]
     if len(answered_scores) == len(session.questions):
         session.status = "completed"
-        # Overall score on 100-point scale
-        avg_score = sum(answered_scores) / len(answered_scores)
-        session.overall_score = int(avg_score * 10)
-        session.summary_feedback = (
-            f"You completed the {session.target_role} mock interview with an overall score of {session.overall_score}/100. "
-            f"Strongest performance in conceptual definitions. Review the suggested model answers for edge cases."
-        )
+        profile = await get_or_create_profile(current_user["id"])
+
+        # Generate deeply personalized Groq AI Evaluation & Experienced Mentor Suggestions
+        final_eval = await generate_final_interview_evaluation(session, profile)
+        session.overall_score = final_eval.get("overall_score", int((sum(answered_scores) / len(answered_scores)) * 10))
+        session.hiring_verdict = final_eval.get("hiring_verdict", "Hire" if session.overall_score >= 70 else "Needs Development")
+        session.summary_feedback = final_eval.get("executive_summary")
+        session.key_strengths = final_eval.get("key_strengths", [])
+        session.key_improvements = final_eval.get("key_improvements", [])
+        session.mentor_advice = final_eval.get("mentor_advice")
 
         # Dynamic readiness score boost for completing interviews
-        profile = await get_or_create_profile(current_user["id"])
         current_readiness = profile.get("readiness_score", 35.0)
         new_score = min(round(current_readiness + (session.overall_score * 0.05), 1), 99.0)
         await update_profile(current_user["id"], {"readiness_score": new_score})
@@ -132,3 +138,54 @@ async def get_interview_history(current_user: Dict[str, Any] = Depends(get_curre
         if s.get("user_id") == user_id
     ]
     return sorted(history, key=lambda x: x.created_at, reverse=True)
+
+
+@router.post("/transcribe")
+async def transcribe_audio(
+    audio: UploadFile = File(...),
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """Transcribe speech audio to text using Groq Whisper API."""
+    if not settings.GROQ_API_KEY or len(settings.GROQ_API_KEY) < 5:
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured in server/.env")
+
+    try:
+        from groq import Groq
+
+        # Read uploaded audio into a temp file
+        audio_bytes = await audio.read()
+        if len(audio_bytes) < 100:
+            raise HTTPException(status_code=400, detail="Audio file is too small or empty")
+
+        suffix = ".webm"
+        if audio.content_type:
+            if "wav" in audio.content_type:
+                suffix = ".wav"
+            elif "mp4" in audio.content_type or "m4a" in audio.content_type:
+                suffix = ".m4a"
+            elif "ogg" in audio.content_type:
+                suffix = ".ogg"
+
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        tmp.write(audio_bytes)
+        tmp.close()
+
+        try:
+            client = Groq(api_key=settings.GROQ_API_KEY)
+            with open(tmp.name, "rb") as f:
+                transcription = client.audio.transcriptions.create(
+                    file=(os.path.basename(tmp.name), f),
+                    model="whisper-large-v3",
+                    language="en",
+                    response_format="text"
+                )
+            text = transcription.strip() if isinstance(transcription, str) else str(transcription).strip()
+            return {"text": text}
+        finally:
+            os.unlink(tmp.name)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Whisper transcription error: {e}")
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")

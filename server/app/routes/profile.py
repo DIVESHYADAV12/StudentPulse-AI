@@ -5,7 +5,8 @@ from app.models.profile import (
     ProjectCreate, 
     ProjectItem, 
     GitHubSyncRequest, 
-    GitHubSyncResponse
+    GitHubSyncResponse,
+    ImportGitHubProjectsRequest
 )
 from app.core.dependencies import get_current_user
 from app.database import get_or_create_profile, update_profile, db_instance, is_db_connected, memory_store
@@ -36,6 +37,8 @@ async def update_my_profile(
         update_fields["target_roles"] = profile_data.target_roles
     if profile_data.github_username is not None:
         update_fields["github_username"] = profile_data.github_username
+    if profile_data.github_repos is not None:
+        update_fields["github_repos"] = [r.model_dump() for r in profile_data.github_repos]
 
     updated = await update_profile(current_user["id"], update_fields)
     
@@ -104,6 +107,67 @@ async def sync_github(
             detail=f"GitHub profile for '{payload.username}' could not be found or accessed"
         )
     
-    # Save the verified GitHub username to the profile
-    await update_profile(current_user["id"], {"github_username": github_data.username})
+    # Save the verified GitHub username AND the full repositories list with tech stacks to the profile
+    repo_dicts = [r.model_dump() for r in github_data.repositories]
+    await update_profile(current_user["id"], {
+        "github_username": github_data.username,
+        "github_repos": repo_dicts
+    })
     return github_data
+
+@router.post("/import-github-projects", response_model=StudentProfile)
+async def import_github_projects(
+    payload: ImportGitHubProjectsRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    profile = await get_or_create_profile(current_user["id"])
+    github_repos = profile.get("github_repos", [])
+    
+    if not github_repos and profile.get("github_username"):
+        fetched = await fetch_github_profile(profile["github_username"])
+        if fetched:
+            github_repos = [r.model_dump() for r in fetched.repositories]
+            await update_profile(current_user["id"], {"github_repos": github_repos})
+            
+    existing_project_urls = {p.get("github_url") for p in profile.get("projects", []) if p.get("github_url")}
+    existing_project_titles = {p.get("title", "").strip().lower() for p in profile.get("projects", [])}
+    
+    selected_names = set(payload.repo_names) if payload.repo_names else None
+    
+    updated_projects = list(profile.get("projects", []))
+    
+    for repo in github_repos:
+        repo_name = repo.get("name", "")
+        if selected_names is not None and repo_name not in selected_names:
+            continue
+            
+        html_url = repo.get("html_url")
+        if html_url in existing_project_urls or repo_name.strip().lower() in existing_project_titles:
+            continue
+            
+        title = repo_name.replace("-", " ").replace("_", " ").title()
+        description = repo.get("description") or f"Open-source repository built with {', '.join(repo.get('tech_stack', [])[:3]) or 'code'}."
+        tech_stack = repo.get("tech_stack", [])
+        if not tech_stack and repo.get("language"):
+            tech_stack = [repo["language"]]
+            
+        new_project = {
+            "id": str(uuid.uuid4())[:8],
+            "title": title,
+            "description": description,
+            "tech_stack": tech_stack,
+            "github_url": html_url,
+            "live_url": None
+        }
+        updated_projects.append(new_project)
+        
+    updated = await update_profile(current_user["id"], {"projects": updated_projects})
+    
+    # Recalculate readiness with project bonus
+    target_role = updated.get("target_roles", ["Full-Stack Developer"])[0]
+    analysis = await analyze_skill_gap(updated, target_role)
+    updated = await update_profile(current_user["id"], {
+        "readiness_score": analysis.readiness_percentage
+    })
+    
+    return updated

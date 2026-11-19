@@ -1,15 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { 
   Bot, 
-  Sparkles, 
   Send, 
   User, 
   RotateCcw, 
   Lightbulb, 
-  ArrowRight,
-  Compass
+  Zap,
+  AlertCircle
 } from 'lucide-react';
 
 const SUGGESTED_CHIPS = [
@@ -25,7 +25,7 @@ export const Mentor = () => {
     {
       id: 'welcome',
       role: 'assistant',
-      content: `Hello ${user?.full_name?.split(' ')[0] || 'there'}! I'm **PulseMentor**, your 24/7 AI Career Companion. I have full context on your verified skills, portfolio projects, and target roles.\n\nHow can I help you accelerate your career preparation today?`
+      content: `Hello ${user?.full_name?.split(' ')[0] || 'there'}! I'm **PulseMentor**, powered by **Groq Llama 3.3 70B**. I have full context on your verified skills, portfolio projects, and target roles.\n\nHow can I help you accelerate your career preparation today?`
     }
   ]);
   const [input, setInput] = useState('');
@@ -34,6 +34,14 @@ export const Mentor = () => {
   const [followUps, setFollowUps] = useState(SUGGESTED_CHIPS);
   const messagesEndRef = useRef(null);
 
+  // Backend AI Configuration State
+  const [aiStatus, setAiStatus] = useState({ 
+    configured: false, 
+    groq_configured: false,
+    groq_model: 'llama-3.3-70b-versatile',
+    active_provider: 'groq'
+  });
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -41,6 +49,19 @@ export const Mentor = () => {
   useEffect(() => {
     scrollToBottom();
   }, [messages, loading]);
+
+  useEffect(() => {
+    fetchAiStatus();
+  }, []);
+
+  const fetchAiStatus = async () => {
+    try {
+      const res = await api.get('/auth/ai-status');
+      setAiStatus(res.data);
+    } catch (err) {
+      console.error("Failed to load AI status", err);
+    }
+  };
 
   const handleSendMessage = async (textToSend) => {
     const messageText = textToSend || input;
@@ -78,7 +99,7 @@ export const Mentor = () => {
         {
           id: Date.now().toString(),
           role: 'assistant',
-          content: "Sorry, I ran into an issue connecting to the mentoring engine. Please check your network and try again."
+          content: "Sorry, I ran into an issue connecting to the mentoring engine. Please verify that GROQ_API_KEY is configured in backend server/.env."
         }
       ]);
     } finally {
@@ -101,7 +122,7 @@ export const Mentor = () => {
   return (
     <div className="max-w-4xl mx-auto space-y-6 pb-12 flex flex-col h-[calc(100vh-12rem)] min-h-[550px]">
       {/* Header */}
-      <div className="flex items-center justify-between pb-4 border-b border-cream-200/80 shrink-0">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-cream-200/80 shrink-0">
         <div className="flex items-center gap-3">
           <div className="w-11 h-11 rounded-2xl bg-forest-900 text-white flex items-center justify-center shadow-premium">
             <Bot className="w-6 h-6 text-forest-300" />
@@ -109,10 +130,18 @@ export const Mentor = () => {
           <div>
             <h1 className="text-xl font-extrabold text-navy-950 flex items-center gap-2">
               AI Career Guidance Mentor
-              <span className="badge-forest text-[10px] py-0.5">24/7 Context-Aware</span>
+              {aiStatus.groq_configured ? (
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold">
+                  <Zap className="w-3 h-3 text-emerald-600 fill-emerald-600" /> Groq Llama 3.3 Active (Backend)
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold" title="Set GROQ_API_KEY in server/.env line 21">
+                  <AlertCircle className="w-3 h-3 text-amber-600" /> Groq Key Missing in server/.env
+                </span>
+              )}
             </h1>
             <p className="text-xs text-navy-800/60 font-medium">
-              Grounded in your profile, skills, and target roles
+              Grounded in your profile, skills, and target career goals
             </p>
           </div>
         </div>
@@ -151,9 +180,7 @@ export const Mentor = () => {
                   ? 'bg-forest-900 text-white rounded-tr-none'
                   : 'bg-white text-navy-900 border border-cream-200/90 rounded-tl-none'
               }`}>
-                <div className="whitespace-pre-wrap font-normal">
-                  {m.content}
-                </div>
+                <ReactMarkdown className="whitespace-pre-wrap font-normal">{m.content}</ReactMarkdown>
               </div>
             </div>
           );

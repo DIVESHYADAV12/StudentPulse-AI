@@ -3,6 +3,8 @@
 .env.local
 server/.env
 client/.env
+.env.*
+!.env.example
 
 # Node
 node_modules/

@@ -34,5 +34,9 @@ class InterviewSession(BaseModel):
     questions: List[InterviewQuestion]
     current_index: int = 0
     overall_score: Optional[int] = None # 0 to 100
+    hiring_verdict: Optional[str] = None # Strong Hire, Hire, Lean Hire, Needs Development
     summary_feedback: Optional[str] = None
+    key_strengths: List[str] = Field(default_factory=list)
+    key_improvements: List[str] = Field(default_factory=list)
+    mentor_advice: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)

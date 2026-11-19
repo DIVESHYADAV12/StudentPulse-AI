@@ -7,10 +7,18 @@ import uuid
 
 logger = logging.getLogger("studentpulse.mentor")
 
-SYSTEM_MENTOR_PERSONA = """You are 'PulseMentor', an elite Senior Software Engineer and Tech Career Advisor at StudentPulse AI.
-Your mission is to provide realistic, empathetic, and actionable career guidance to college engineering students.
-You tailor your advice directly to the student's background, current skills, projects, and target career goals.
-Avoid generic fluff; give concrete technical advice, project architectures, and interview tips.
+SYSTEM_MENTOR_PERSONA = """You are 'PulseMentor', an elite Senior Staff Engineer and Tech Career Advisor at StudentPulse AI.
+Your mission is to provide structured, realistic, and highly actionable career guidance to college engineering students.
+
+CRITICAL FORMATTING INSTRUCTIONS (STRICT):
+1. NEVER output a wall of dense text or unstructured paragraphs.
+2. Structure your entire response in clear, organized bullet points with bold section headers.
+3. Highlight all important terms, technologies, frameworks, and architecture patterns in **bold** (e.g. **FastAPI**, **Docker Multi-Stage**, **Redis Cache**, **B-Tree Indexing**, **STAR Method**).
+4. Organize every response into these 3 structured sections:
+   - 🎯 **Direct Recommendation**: 1-2 punchy bullet points directly answering the student's question.
+   - 📌 **Key Action Steps & Tech Stack**: Bulleted roadmap detailing exact tools, architecture patterns, and what to build/study.
+   - 💡 **Interview & Career Pro-Tip**: Concrete advice on how hiring managers evaluate this and how to explain it in interviews.
+5. Keep points concise, punchy, and easy to scan.
 """
 
 async def generate_mentor_reply(
@@ -36,109 +44,93 @@ Student Background:
 - Portfolio Projects: {'; '.join(projects) if projects else 'None recorded yet'}
 """
 
-    # Try Gemini Flash
-    if settings.GEMINI_API_KEY and len(settings.GEMINI_API_KEY) > 5:
-        try:
-            import google.generativeai as genai
-            genai.configure(api_key=settings.GEMINI_API_KEY)
-            model = genai.GenerativeModel(settings.GEMINI_MODEL)
+    default_follow_ups = [
+        "What project should I build next to boost my score?",
+        "How should I explain this in an interview?",
+        "Which missing skill should I tackle first?"
+    ]
 
-            prompt = f"""
-{SYSTEM_MENTOR_PERSONA}
+    # Groq AI is mandatory
+    if not settings.GROQ_API_KEY or len(settings.GROQ_API_KEY) < 5:
+        return ChatResponse(
+            reply=(
+                "⚠️ **Groq AI is mandatory for PulseMentor.**\n\n"
+                "Please open `server/.env` in your backend and set your Groq API key on line 21:\n"
+                "```env\n"
+                "GROQ_API_KEY=gsk_your_groq_api_key_here\n"
+                "```\n"
+                "Once saved, restart the backend server or refresh to begin chatting with PulseMentor."
+            ),
+            conversation_id=conversation_id,
+            suggested_follow_ups=["Where do I find my Groq API key?"]
+        )
 
+    try:
+        from groq import AsyncGroq
+        groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY)
+
+        groq_messages = [
+            {
+                "role": "system",
+                "content": f"""{SYSTEM_MENTOR_PERSONA}
+
+Current Student Context:
 {student_context}
 
-User's Question: "{user_message}"
-
-Respond concisely and professionally in 2 to 4 paragraphs.
-At the end of your response, provide a JSON block on a new line:
-```json
-{{"suggested_follow_ups": ["<Question 1>", "<Question 2>", "<Question 3>"]}}
-```
-"""
-            response = await model.generate_content_async(prompt)
-            full_text = response.text.strip()
-
-            follow_ups = [
-                "What project should I build next?",
-                "How should I explain this in an interview?",
-                "Which missing skill should I tackle first?"
-            ]
-
-            if "```json" in full_text:
-                parts = full_text.split("```json")
-                reply_text = parts[0].strip()
-                try:
-                    json_str = parts[1].split("```")[0].strip()
-                    parsed = json.loads(json_str)
-                    follow_ups = parsed.get("suggested_follow_ups", follow_ups)
-                except Exception:
-                    pass
-            else:
-                reply_text = full_text
-
-            return ChatResponse(
-                reply=reply_text,
-                conversation_id=conversation_id,
-                suggested_follow_ups=follow_ups
-            )
-        except Exception as e:
-            logger.warning(f"Gemini mentor chat error ({e}), using contextual advisor fallback.")
-
-    # Contextual Advisor Fallback
-    msg_lower = user_message.lower()
-
-    if "project" in msg_lower or "build" in msg_lower:
-        reply = (
-            f"Looking at your profile for **{target_roles}**, you already have solid foundational skills in "
-            f"{', '.join([s.get('name') for s in profile.get('skills', [])][:3]) or 'programming'}. "
-            f"To reach that next readiness tier (currently at {readiness}%), I recommend building an **Asynchronous Task Queue & Notification Service**. "
-            f"Architect it using FastAPI, Redis for message queuing, and PostgreSQL for persistent state. "
-            f"This demonstrates concurrency, worker threads, and database transaction handling—three topics hiring managers look for in technical interviews."
-        )
-        follow_ups = [
-            "How do I structure the architecture for this project?",
-            "What database schema should I use?",
-            "How can I test this project with automated CI/CD?"
-        ]
-    elif "interview" in msg_lower or "prepare" in msg_lower:
-        reply = (
-            f"For **{target_roles}** interviews, hiring teams typically focus on three distinct areas:\n\n"
-            f"1. **Core Language & Framework Internals:** Be ready to explain async event loops, database indexing (B-Trees vs Hash), and state lifecycle in depth.\n"
-            f"2. **System & API Design:** Practice designing RESTful schemas, rate limiting, and caching layers with Redis.\n"
-            f"3. **Behavioral STAR Technique:** When discussing your past projects, quantify the impact—e.g., 'reduced API response latency by 35%'.\n\n"
-            f"Head over to our **AI Interview Prep** tab to run a mock drill right now!"
-        )
-        follow_ups = [
-            "Give me a sample interview question for this role",
-            "How should I answer 'Tell me about yourself'?",
-            "What are common behavioral pitfalls to avoid?"
-        ]
-    elif "gap" in msg_lower or "missing" in msg_lower or "learn" in msg_lower:
-        reply = (
-            f"Based on your latest Skill Gap evaluation for **{target_roles}**, your readiness score is **{readiness}%**. "
-            f"Your highest-leverage growth area right now is mastering **Containerization (Docker)** and **Relational Database Query Optimization (PostgreSQL)**. "
-            f"These two skills alone will close the critical gap between college theory and production engineering."
-        )
-        follow_ups = [
-            "What resources do you recommend for learning Docker?",
-            "How do I practice database query tuning?",
-            "Take me to my personalized weekly action plan"
-        ]
-    else:
-        reply = (
-            f"Hello! As your career mentor for **{target_roles}**, I'm here to help you bridge your gaps and stand out to hiring managers. "
-            f"You currently have {len(profile.get('skills', []))} verified skills and {len(profile.get('projects', []))} portfolio projects, giving you a {readiness}% Career Readiness score.\n\n"
-            f"What aspect of your career preparation would you like to tackle today?"
-        )
-        follow_ups = [
-            "What project should I build next to boost my score?",
-            "What are the biggest gaps in my current profile?",
-            "How should I prepare for technical interviews?"
+Respond strictly in well-structured bullet points, with bold section headers and **bold highlights** for all key technical terms. Avoid writing long dense paragraphs.
+Format your final output as valid JSON with:
+{{
+  "reply": "<your beautifully organized markdown response using bullet points, section headers, and bold highlights>",
+  "suggested_follow_ups": ["<Short question 1>", "<Short question 2>", "<Short question 3>"]
+}}"""
+            }
         ]
 
-    return ChatResponse(
-        reply=reply,
-        conversation_id=conversation_id,
-        suggested_follow_ups=follow_ups
-    )
+        # Append last 4 messages from conversation history for context
+        if history:
+            for msg in history[-4:]:
+                r = "user" if msg.get("role") in ["user", "student"] else "assistant"
+                groq_messages.append({"role": r, "content": msg.get("content", "")})
+
+        groq_messages.append({"role": "user", "content": user_message})
+
+        models_to_try = [settings.GROQ_MODEL]
+        if "qwen/qwen3.8-27b" not in models_to_try:
+            models_to_try.append("qwen/qwen3.8-27b")
+        if "llama3-70b-8192" not in models_to_try:
+            models_to_try.append("llama3-70b-8192")
+
+        completion = None
+        last_err = None
+        for model_name in models_to_try:
+            try:
+                completion = await groq_client.chat.completions.create(
+                    model=model_name,
+                    messages=groq_messages,
+                    response_format={"type": "json_object"},
+                    temperature=0.6,
+                    max_tokens=800
+                )
+                if completion and completion.choices:
+                    break
+            except Exception as me:
+                last_err = me
+                continue
+
+        if not completion:
+            raise last_err
+
+        raw_json = completion.choices[0].message.content
+        parsed = json.loads(raw_json)
+        return ChatResponse(
+            reply=parsed.get("reply", "Here is your career guidance."),
+            conversation_id=conversation_id,
+            suggested_follow_ups=parsed.get("suggested_follow_ups", default_follow_ups)
+        )
+    except Exception as e:
+        logger.error(f"Groq mentor error: {e}")
+        return ChatResponse(
+            reply=f"⚠️ Groq API connection error: {str(e)}. Please check your `GROQ_API_KEY` in `server/.env`.",
+            conversation_id=conversation_id,
+            suggested_follow_ups=default_follow_ups
+        )

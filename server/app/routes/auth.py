@@ -3,10 +3,16 @@ from app.models.user import UserCreate, UserLogin, UserResponse, Token
 from app.core.security import hash_password, verify_password, create_access_token
 from app.core.dependencies import get_current_user
 from app.database import find_user_by_email, insert_user, get_or_create_profile, DEMO_PASSWORD_HASH
+from app.config import settings
+from pydantic import BaseModel
 from datetime import timedelta
 from typing import Dict, Any
+import os
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Authentication"])
+
+class AIConfigRequest(BaseModel):
+    api_key: str
 
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
 async def register(user_in: UserCreate):
@@ -26,11 +32,8 @@ async def register(user_in: UserCreate):
     }
     
     created_user = await insert_user(user_record)
-    
-    # Initialize their student profile
     await get_or_create_profile(created_user["id"])
     
-    # Generate JWT token
     access_token = create_access_token(data={"sub": created_user["id"], "email": created_user["email"]})
     
     user_response = UserResponse(
@@ -48,7 +51,6 @@ async def login(credentials: UserLogin):
     email_clean = credentials.email.strip().lower()
     user = await find_user_by_email(email_clean)
     
-    # Auto-seed demo account if it doesn't exist
     if not user and email_clean == "student@university.edu":
         demo_record = {
             "email": "student@university.edu",
@@ -87,3 +89,88 @@ async def get_me(current_user: Dict[str, Any] = Depends(get_current_user)):
         is_active=current_user.get("is_active", True),
         created_at=current_user["created_at"]
     )
+
+@router.get("/ai-status")
+async def get_ai_status():
+    groq_ok = bool(settings.GROQ_API_KEY and len(settings.GROQ_API_KEY) > 5)
+    gemini_ok = bool(settings.GEMINI_API_KEY and len(settings.GEMINI_API_KEY) > 5)
+    
+    active_provider = "groq" if groq_ok else ("gemini" if gemini_ok else "offline_rubric")
+    
+    return {
+        "configured": groq_ok or gemini_ok,
+        "groq_configured": groq_ok,
+        "groq_model": settings.GROQ_MODEL,
+        "gemini_configured": gemini_ok,
+        "gemini_model": settings.GEMINI_MODEL,
+        "active_provider": active_provider
+    }
+
+@router.post("/groq-config")
+async def save_groq_config(payload: AIConfigRequest):
+    clean_key = payload.api_key.strip()
+    if len(clean_key) < 10:
+        raise HTTPException(status_code=400, detail="Invalid Groq API key format. Expected a valid key from console.groq.com.")
+        
+    settings.GROQ_API_KEY = clean_key
+    
+    # Update server/.env so it persists
+    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env")
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r") as f:
+                content = f.read()
+            if "GROQ_API_KEY=" in content:
+                new_content = ""
+                for line in content.splitlines():
+                    if line.startswith("GROQ_API_KEY="):
+                        new_content += f"GROQ_API_KEY={clean_key}\n"
+                    else:
+                        new_content += line + "\n"
+                with open(env_path, "w") as f:
+                    f.write(new_content)
+            else:
+                with open(env_path, "a") as f:
+                    f.write(f"\nGROQ_API_KEY={clean_key}\n")
+        except Exception:
+            pass
+            
+    return {
+        "success": True,
+        "configured": True,
+        "provider": "groq",
+        "model": settings.GROQ_MODEL,
+        "message": f"Groq AI ({settings.GROQ_MODEL}) activated successfully for Interview Prep and Career Mentor!"
+    }
+
+@router.post("/ai-config")
+async def save_ai_config(payload: AIConfigRequest):
+    clean_key = payload.api_key.strip()
+    if len(clean_key) < 10:
+        raise HTTPException(status_code=400, detail="Invalid API key format")
+        
+    settings.GEMINI_API_KEY = clean_key
+    
+    # Update server/.env so it persists
+    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env")
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r") as f:
+                content = f.read()
+            if "GEMINI_API_KEY=" in content:
+                new_content = ""
+                for line in content.splitlines():
+                    if line.startswith("GEMINI_API_KEY="):
+                        new_content += f"GEMINI_API_KEY={clean_key}\n"
+                    else:
+                        new_content += line + "\n"
+                with open(env_path, "w") as f:
+                    f.write(new_content)
+        except Exception as e:
+            pass
+            
+    return {
+        "success": True,
+        "configured": True,
+        "message": "Google Gemini API key configured successfully! Live AI evaluation is active."
+    }

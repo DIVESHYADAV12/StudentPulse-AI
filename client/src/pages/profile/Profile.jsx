@@ -16,7 +16,11 @@ import {
   Save,
   RefreshCw,
   Star,
-  CheckCircle2
+  GitFork,
+  CheckCircle2,
+  Search,
+  Layers,
+  ArrowDownToLine
 } from 'lucide-react';
 
 const POPULAR_ROLES = [
@@ -43,10 +47,13 @@ export const Profile = () => {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState({ text: '', type: '' });
 
-  // GitHub Sync State
+  // GitHub Sync & Repos State
   const [githubUsername, setGithubUsername] = useState('');
   const [syncingGithub, setSyncingGithub] = useState(false);
   const [githubData, setGithubData] = useState(null);
+  const [repoSearch, setRepoSearch] = useState('');
+  const [repoTechFilter, setRepoTechFilter] = useState('all');
+  const [importingProjects, setImportingProjects] = useState(false);
 
   // New Skill Modal State
   const [showSkillModal, setShowSkillModal] = useState(false);
@@ -78,6 +85,16 @@ export const Profile = () => {
       if (res.data.github_username) {
         setGithubUsername(res.data.github_username);
       }
+      // If profile already has persisted GitHub repositories, populate githubData immediately
+      if (res.data.github_repos && res.data.github_repos.length > 0) {
+        setGithubData({
+          username: res.data.github_username,
+          repositories: res.data.github_repos,
+          public_repos: res.data.github_repos.length,
+          top_languages: [...new Set(res.data.github_repos.map(r => r.language).filter(Boolean))],
+          detected_skills: [...new Set(res.data.github_repos.flatMap(r => r.tech_stack || []))]
+        });
+      }
     } catch (err) {
       console.error("Error loading profile", err);
       setMessage({ text: 'Could not load profile data.', type: 'error' });
@@ -93,7 +110,8 @@ export const Profile = () => {
         education: updatedFields.education !== undefined ? updatedFields.education : profile.education,
         skills: updatedFields.skills !== undefined ? updatedFields.skills : profile.skills,
         target_roles: updatedFields.target_roles !== undefined ? updatedFields.target_roles : profile.target_roles,
-        github_username: updatedFields.github_username !== undefined ? updatedFields.github_username : githubUsername
+        github_username: updatedFields.github_username !== undefined ? updatedFields.github_username : githubUsername,
+        github_repos: updatedFields.github_repos !== undefined ? updatedFields.github_repos : profile.github_repos
       };
 
       const res = await api.put('/profile', payload);
@@ -159,7 +177,6 @@ export const Profile = () => {
     setNewSkill({ name: '', category: 'languages', proficiency: 'intermediate' });
     setShowSkillModal(false);
 
-    // Auto-save immediately to backend and recalculate gap analysis
     await persistProfile(
       { skills: updatedSkills },
       `Added "${skillName}" to skills! Skill Gap Analysis automatically updated.`
@@ -185,8 +202,13 @@ export const Profile = () => {
         username: githubUsername.trim()
       });
       setGithubData(res.data);
+      setProfile(prev => ({
+        ...prev,
+        github_username: res.data.username,
+        github_repos: res.data.repositories
+      }));
       setMessage({ 
-        text: `Synced GitHub for @${res.data.username}! Click "Import Detected Skills" to add them to your profile.`, 
+        text: `Synced ${res.data.repositories.length} GitHub repositories for @${res.data.username} with detected tech stacks!`, 
         type: 'success' 
       });
     } catch (err) {
@@ -202,13 +224,13 @@ export const Profile = () => {
   const handleImportGithubSkills = async () => {
     if (!githubData) return;
 
-    // Aggregate detected_skills, top_languages, and repository topics/languages
     const candidateSet = new Set();
     (githubData.detected_skills || []).forEach(s => candidateSet.add(s));
     (githubData.top_languages || []).forEach(l => candidateSet.add(l));
     (githubData.repositories || []).forEach(r => {
       if (r.language) candidateSet.add(r.language);
       (r.topics || []).forEach(t => candidateSet.add(t));
+      (r.tech_stack || []).forEach(t => candidateSet.add(t));
     });
 
     const existingNames = new Set(profile.skills.map(s => s.name.toLowerCase()));
@@ -240,11 +262,47 @@ export const Profile = () => {
     const updatedSkills = [...profile.skills, ...newItems];
     setProfile(prev => ({ ...prev, skills: updatedSkills }));
 
-    // Auto-save immediately to database
     await persistProfile(
       { skills: updatedSkills, github_username: githubData.username },
       `Successfully imported ${newItems.length} skills from GitHub! Skill Gap Analysis automatically updated.`
     );
+  };
+
+  const handleImportAllProjects = async () => {
+    if (!githubData?.repositories?.length) return;
+    try {
+      setImportingProjects(true);
+      const res = await api.post('/profile/import-github-projects', {});
+      setProfile(res.data);
+      setMessage({ 
+        text: `Successfully imported GitHub repositories into your Portfolio Projects! Career Readiness updated with portfolio bonus.`, 
+        type: 'success' 
+      });
+      setTimeout(() => setMessage({ text: '', type: '' }), 5000);
+    } catch (err) {
+      setMessage({ text: 'Failed to import GitHub projects.', type: 'error' });
+    } finally {
+      setImportingProjects(false);
+    }
+  };
+
+  const handleImportSingleProject = async (repo) => {
+    try {
+      setImportingProjects(true);
+      const res = await api.post('/profile/import-github-projects', {
+        repo_names: [repo.name]
+      });
+      setProfile(res.data);
+      setMessage({ 
+        text: `Imported "${repo.name}" with its tech stack into your Portfolio!`, 
+        type: 'success' 
+      });
+      setTimeout(() => setMessage({ text: '', type: '' }), 4000);
+    } catch (err) {
+      setMessage({ text: 'Failed to import project.', type: 'error' });
+    } finally {
+      setImportingProjects(false);
+    }
   };
 
   const handleAddProject = async (e) => {
@@ -284,6 +342,24 @@ export const Profile = () => {
     }
   };
 
+  // Filter repos by search and tech tag
+  const allRepos = githubData?.repositories || [];
+  const filteredRepos = allRepos.filter(repo => {
+    const matchesSearch = repo.name.toLowerCase().includes(repoSearch.toLowerCase()) ||
+      (repo.description && repo.description.toLowerCase().includes(repoSearch.toLowerCase())) ||
+      (repo.tech_stack && repo.tech_stack.some(t => t.toLowerCase().includes(repoSearch.toLowerCase())));
+    
+    if (repoTechFilter === 'all') return matchesSearch;
+    return matchesSearch && repo.tech_stack?.some(t => t.toLowerCase() === repoTechFilter.toLowerCase());
+  });
+
+  // Extract unique tech tags from all repos
+  const allRepoTechTags = Array.from(new Set(allRepos.flatMap(r => r.tech_stack || [])));
+
+  // Check which repos are already in portfolio
+  const portfolioGithubUrls = new Set((profile?.projects || []).map(p => p.github_url).filter(Boolean));
+  const portfolioTitles = new Set((profile?.projects || []).map(p => p.title.toLowerCase().replace(/[^a-z0-9]/g, '')));
+
   if (loading) {
     return (
       <div className="min-h-[60vh] flex flex-col items-center justify-center">
@@ -304,7 +380,7 @@ export const Profile = () => {
             Student Profile & Background
           </h1>
           <p className="text-sm text-navy-800/70 mt-1">
-            Skills and changes are automatically saved and synced with your AI Skill Gap Analyzer.
+            Skills, academics, and GitHub projects are automatically synced with your AI Skill Gap Analyzer.
           </p>
         </div>
 
@@ -508,20 +584,21 @@ export const Profile = () => {
         </div>
       </div>
 
-      {/* Section 3: GitHub Integration & Sync */}
+      {/* Section 3: GitHub Integration & All Projects Showcase */}
       <div className="card-premium">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 mb-6 border-b border-cream-200/80 gap-3">
           <div className="flex items-center gap-2.5">
             <Github className="w-5 h-5 text-forest-700" />
             <div>
-              <h2 className="text-lg font-bold text-navy-950">GitHub Public Repository Sync</h2>
+              <h2 className="text-lg font-bold text-navy-950">GitHub Projects & Repositories Showcase</h2>
               <p className="text-xs text-navy-800/70">
-                Connect your public GitHub username to analyze code repositories and auto-discover languages.
+                List all projects done on your GitHub with their detected tech stacks, and import them directly to your portfolio.
               </p>
             </div>
           </div>
         </div>
 
+        {/* Sync Form */}
         <form onSubmit={handleSyncGithub} className="flex flex-col sm:flex-row gap-3 mb-6">
           <div className="relative flex-1">
             <Github className="w-5 h-5 text-navy-800/40 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -543,103 +620,213 @@ export const Profile = () => {
             ) : (
               <RefreshCw className="w-4 h-4" />
             )}
-            {syncingGithub ? 'Syncing...' : 'Sync GitHub'}
+            {syncingGithub ? 'Syncing...' : 'Sync All GitHub Projects'}
           </button>
         </form>
 
-        {/* GitHub Results Card */}
+        {/* GitHub Results & All Repositories Showcase */}
         {githubData && (
-          <div className="p-5 rounded-2xl bg-cream-50/80 border border-cream-200 space-y-4">
-            <div className="flex items-center justify-between flex-wrap gap-4">
-              <div className="flex items-center gap-3">
-                {githubData.avatar_url && (
-                  <img
-                    src={githubData.avatar_url}
-                    alt={githubData.username}
-                    className="w-12 h-12 rounded-full border border-forest-200 shadow-sm"
-                  />
-                )}
-                <div>
-                  <h3 className="text-sm font-bold text-navy-950 flex items-center gap-2">
-                    {githubData.name || githubData.username}
-                    <span className="text-xs font-normal text-navy-800/60">(@{githubData.username})</span>
-                  </h3>
-                  <p className="text-xs text-navy-800/70">{githubData.bio || 'Public GitHub profile verified'}</p>
+          <div className="space-y-6">
+            {/* Top Stats Banner */}
+            <div className="p-5 rounded-2xl bg-cream-50/80 border border-cream-200 space-y-4">
+              <div className="flex items-center justify-between flex-wrap gap-4">
+                <div className="flex items-center gap-3">
+                  {githubData.avatar_url && (
+                    <img
+                      src={githubData.avatar_url}
+                      alt={githubData.username}
+                      className="w-12 h-12 rounded-full border border-forest-200 shadow-sm"
+                    />
+                  )}
+                  <div>
+                    <h3 className="text-sm font-bold text-navy-950 flex items-center gap-2">
+                      {githubData.name || githubData.username}
+                      <span className="text-xs font-normal text-navy-800/60">(@{githubData.username})</span>
+                    </h3>
+                    <p className="text-xs text-navy-800/70">{githubData.bio || 'Verified GitHub Public Profile'}</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-semibold px-3 py-1.5 bg-white rounded-lg border border-cream-300 shadow-sm">
+                    {allRepos.length} Repositories Found
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleImportGithubSkills}
+                    disabled={saving}
+                    className="btn-secondary text-xs py-1.5 px-3"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-forest-700" />
+                    Import All Detected Skills
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleImportAllProjects}
+                    disabled={importingProjects}
+                    className="btn-primary text-xs py-1.5 px-3"
+                  >
+                    <ArrowDownToLine className="w-3.5 h-3.5" />
+                    {importingProjects ? 'Importing...' : 'Import All to Portfolio'}
+                  </button>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold px-3 py-1 bg-white rounded-lg border border-cream-300">
-                  {githubData.public_repos} Public Repos
-                </span>
-                <button
-                  type="button"
-                  onClick={handleImportGithubSkills}
-                  disabled={saving}
-                  className="btn-primary text-xs py-2 px-3.5"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-forest-300" />
-                  {saving ? 'Importing...' : 'Import Detected Skills'}
-                </button>
+              {/* Detected Top Languages */}
+              <div className="pt-3 border-t border-cream-200 flex items-center gap-2 flex-wrap text-xs">
+                <span className="font-bold text-navy-800">Primary Languages:</span>
+                {githubData.top_languages.map(lang => (
+                  <span key={lang} className="px-2.5 py-0.5 rounded-md bg-white border text-xs font-semibold text-forest-900 shadow-sm">
+                    {lang}
+                  </span>
+                ))}
               </div>
             </div>
 
-            {/* Detected Languages & Repos */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-3 border-t border-cream-200">
-              <div>
-                <p className="text-xs font-bold uppercase tracking-wider text-navy-800 mb-2">
-                  Top Detected Languages:
-                </p>
-                <div className="flex flex-wrap gap-1.5">
-                  {githubData.top_languages.map(lang => (
-                    <span key={lang} className="px-2.5 py-1 rounded-md bg-white border text-xs font-medium text-navy-900">
-                      {lang}
-                    </span>
-                  ))}
-                </div>
+            {/* Repositories Search & Filters */}
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
+              <div className="relative w-full sm:w-72">
+                <Search className="w-4 h-4 text-navy-800/40 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Search by repo or tech..."
+                  value={repoSearch}
+                  onChange={(e) => setRepoSearch(e.target.value)}
+                  className="w-full pl-9 pr-4 py-2 bg-white border border-cream-300 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-forest-500"
+                />
               </div>
 
-              <div>
-                <p className="text-xs font-bold uppercase tracking-wider text-navy-800 mb-2">
-                  Recent Active Repositories:
-                </p>
-                <div className="space-y-1.5">
-                  {githubData.repositories.slice(0, 3).map(repo => (
-                    <a
-                      key={repo.name}
-                      href={repo.html_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex items-center justify-between p-2 rounded-lg bg-white border border-cream-200 hover:border-forest-400 text-xs text-navy-900 transition-colors"
-                    >
-                      <span className="font-semibold text-forest-800 truncate">{repo.name}</span>
-                      <div className="flex items-center gap-2 text-navy-800/60 shrink-0">
-                        {repo.language && <span>{repo.language}</span>}
-                        {repo.stars > 0 && (
-                          <span className="flex items-center gap-0.5">
-                            <Star className="w-3 h-3 text-amber-500 fill-amber-500" /> {repo.stars}
-                          </span>
-                        )}
-                        <ExternalLink className="w-3.5 h-3.5" />
-                      </div>
-                    </a>
+              {/* Tech Filter Dropdown */}
+              <div className="flex items-center gap-2 w-full sm:w-auto">
+                <span className="text-xs font-semibold text-navy-800/70 whitespace-nowrap">Filter Tech:</span>
+                <select
+                  value={repoTechFilter}
+                  onChange={(e) => setRepoTechFilter(e.target.value)}
+                  className="px-3 py-1.5 bg-white border border-cream-300 rounded-xl text-xs font-semibold text-navy-950 focus:outline-none focus:ring-2 focus:ring-forest-500"
+                >
+                  <option value="all">All Technologies ({allRepos.length})</option>
+                  {allRepoTechTags.slice(0, 15).map(t => (
+                    <option key={t} value={t}>{t}</option>
                   ))}
-                </div>
+                </select>
               </div>
+            </div>
+
+            {/* Complete Grid of GitHub Projects with Tech Stacks */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[600px] overflow-y-auto pr-1">
+              {filteredRepos.length === 0 ? (
+                <div className="col-span-full py-8 text-center text-xs text-navy-800/50 italic bg-cream-50/50 rounded-xl border border-dashed border-cream-300">
+                  No repositories match your search or filter.
+                </div>
+              ) : (
+                filteredRepos.map(repo => {
+                  const isImported = portfolioGithubUrls.has(repo.html_url) || 
+                    portfolioTitles.has(repo.name.toLowerCase().replace(/[^a-z0-9]/g, ''));
+
+                  return (
+                    <div
+                      key={repo.name}
+                      className="p-4 rounded-xl bg-white border border-cream-200 hover:border-forest-400 transition-all shadow-soft flex flex-col justify-between"
+                    >
+                      <div>
+                        {/* Title & Stats */}
+                        <div className="flex items-start justify-between gap-2 mb-1.5">
+                          <a
+                            href={repo.html_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-bold text-navy-950 hover:text-forest-700 text-sm flex items-center gap-1.5 transition-colors group"
+                          >
+                            <span>{repo.name}</span>
+                            <ExternalLink className="w-3.5 h-3.5 opacity-0 group-hover:opacity-100 transition-opacity" />
+                          </a>
+
+                          <div className="flex items-center gap-2 text-navy-800/60 text-xs shrink-0">
+                            {repo.stars > 0 && (
+                              <span className="flex items-center gap-0.5">
+                                <Star className="w-3 h-3 text-amber-500 fill-amber-500" /> {repo.stars}
+                              </span>
+                            )}
+                            {repo.forks > 0 && (
+                              <span className="flex items-center gap-0.5">
+                                <GitFork className="w-3 h-3 text-slate-500" /> {repo.forks}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Description */}
+                        <p className="text-xs text-navy-800/75 leading-relaxed line-clamp-2 mb-3">
+                          {repo.description || "No description provided on GitHub."}
+                        </p>
+                      </div>
+
+                      <div>
+                        {/* Prominent Tech Stack Badges */}
+                        <div className="flex flex-wrap gap-1.5 mb-3 pt-2 border-t border-cream-100">
+                          {repo.tech_stack?.length > 0 ? (
+                            repo.tech_stack.map(tech => (
+                              <span
+                                key={tech}
+                                className="px-2 py-0.5 rounded-md bg-forest-50 text-forest-900 border border-forest-200 text-[11px] font-semibold"
+                              >
+                                {tech}
+                              </span>
+                            ))
+                          ) : (
+                            repo.language && (
+                              <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-800 text-[11px] font-semibold">
+                                {repo.language}
+                              </span>
+                            )
+                          )}
+                        </div>
+
+                        {/* Actions */}
+                        <div className="flex items-center justify-between text-xs pt-2 border-t border-cream-200/80">
+                          <a
+                            href={repo.html_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-forest-700 hover:underline font-semibold flex items-center gap-1"
+                          >
+                            <Github className="w-3.5 h-3.5" /> View on GitHub
+                          </a>
+
+                          {isImported ? (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-bold text-forest-700 bg-forest-50 px-2 py-0.5 rounded border border-forest-200">
+                              <Check className="w-3 h-3" /> In Portfolio
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleImportSingleProject(repo)}
+                              disabled={importingProjects}
+                              className="btn-secondary text-[11px] py-1 px-2.5 font-bold"
+                            >
+                              + Import to Portfolio
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         )}
       </div>
 
-      {/* Section 4: Projects Portfolio */}
+      {/* Section 4: Projects & Practical Portfolio */}
       <div className="card-premium">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 mb-6 border-b border-cream-200/80 gap-3">
           <div className="flex items-center gap-2.5">
             <FolderGit2 className="w-5 h-5 text-forest-700" />
             <div>
-              <h2 className="text-lg font-bold text-navy-950">Projects & Practical Portfolio</h2>
+              <h2 className="text-lg font-bold text-navy-950">Active Portfolio Projects ({profile?.projects?.length || 0})</h2>
               <p className="text-xs text-navy-800/70">
-                Showcase hands-on applications you've built. Projects heavily boost your readiness score.
+                Showcase hands-on applications you've built. Projects grant up to a +15% bonus on your Career Readiness Score.
               </p>
             </div>
           </div>
@@ -649,7 +836,7 @@ export const Profile = () => {
             onClick={() => setShowProjectModal(true)}
             className="btn-secondary text-xs py-2 px-3.5"
           >
-            <Plus className="w-4 h-4" /> Add Project
+            <Plus className="w-4 h-4" /> Add Manual Project
           </button>
         </div>
 
@@ -657,7 +844,9 @@ export const Profile = () => {
           <div className="text-center py-10 bg-cream-50/50 rounded-2xl border border-dashed border-cream-300">
             <FolderGit2 className="w-10 h-10 text-navy-800/30 mx-auto mb-2" />
             <p className="text-sm font-semibold text-navy-900">No projects added yet</p>
-            <p className="text-xs text-navy-800/60 mt-1">Add your hackathon, college, or side projects to showcase your skills.</p>
+            <p className="text-xs text-navy-800/60 mt-1">
+              Sync your GitHub above and click "Import All to Portfolio" to automatically populate this section!
+            </p>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
